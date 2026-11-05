@@ -341,7 +341,7 @@ export default class GitGraph extends View {
         .child(div().flex_none().text_size(12).font_semibold().text_color(t.muted).child(`變更檔案 (${this.files.length})`))
         .child(v_flex().id("git-files").flex_1().min_h(0).overflow_y_scrollbar().children(this.files.map((f) =>
           h_flex().id(`f-${f.path}`).h(24).flex_none().px(6).gap(8).items_center().rounded(6).cursor_pointer()
-            .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => this.pick(f, cx))
+            .when(this.open === f.path, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover)).on_click((_e, cx) => cx.spawn(async (cx) => this.pick(f, cx)))
             .child(div().w(12).text_size(11).text_color(color(f.status)).child(f.status))
             .child(div().flex_1().min_w(0).truncate().text_size(12).child(f.path))))))
       .child(v_flex().flex_1().min_w(0).h_full().overflow_hidden()
