@@ -116,6 +116,8 @@ The root also sets `"preview": "layouts/herdr-git.png"` (the picture the setting
 
 **Keep the Date cell on one line.** At 112px `YYYY-MM-DD HH:mm` wraps onto two lines and overlaps the next row; 124px with `whitespace_nowrap` fits the default UI font.
 
+**Load a clicked file's diff inside `cx.spawn`.** The file list's click handler must be `on_click((_e, cx) => cx.spawn(async (cx) => this.pick(f, cx)))`, not `on_click((_e, cx) => this.pick(f, cx))`. `pick()` awaits `git diff` and then calls `cx.notify()`. Once the handler returns, the click event's `cx` is stale and the redraw does nothing. The file highlight and the path label change at once, but the diff body stays empty until some unrelated redraw happens: the 10 second refresh, terminal output, or a focus change. Before the fix, measured delays were 3.4 to more than 8.7 seconds. `select()` already calls `pick()` inside its own `cx.spawn`, so the first file always showed promptly. Only clicks on later files were slow.
+
 **Built-in `changes` diff tint is faint.** `panel-body` points at Herdr's built-in `changes`, whose added/removed backgrounds are lighter. It is not part of this repo and is not modified.
 
 **Limits left in `main.js` (`shortcut:`):**
@@ -137,6 +139,7 @@ The root also sets `"preview": "layouts/herdr-git.png"` (the picture the setting
 - The tab bar has a "Git" button at its right end; clicking it hides or shows the Git panel on the right, and while the panel is shown the button background is `selected`.
 - In a tab inside a git repo, the panel shows the branch pill, the commit list and colored branch lines, and the ref badge colors match the above (local `ansi2`, tag `ansi3`, `origin/` `ansi5`).
 - Clicking a commit expands a 340px high detail area showing Commit, Parents, Author, Date and the file list and opening the first file automatically; added diff lines have a green background, removed lines a red background, and their line numbers and `+` / `-` use the same color.
+- In a commit with two or more files, click any file other than the first. Its diff replaces the previous one within about half a second, without moving the mouse or waiting for the 10 second refresh.
 - Selecting a commit that contains a rename and clicking that file shows only the changed hunks, not a whole-file add.
 - Unchecking Remotes makes the `origin/` badges disappear; switching to Current leaves only HEAD's history in the list.
 - Pressing "用 Claude 解釋" shows the spinner and "取消"; pressing Cancel shows "已取消" and leaves no `<hash>.md.tmp` under `explain/`; waiting more than 3 minutes shows "逾時：Claude 超過 3 分鐘沒有完成，已自動結束". A successful explanation is saved as `<hash>.md` and shown at once when you leave the commit and come back.
