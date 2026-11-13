@@ -8,6 +8,7 @@ A [Herdr](https://herdr.dev) layout with a Git panel on the right. It shows a co
 
 - **Commit graph.** The panel lists the latest 300 commits with colored branch lanes, merges, and branch and tag badges. You can show all branches or only the current one, and hide `origin/` badges.
 - **Follows your focus.** The panel shows the repo of the focused pane, tab or space. It refreshes when `.git` changes, every 10 seconds, and when you press the refresh button.
+- **Uncommitted changes.** When the working tree has changes, a 「未提交的變更 (N)」 row sits at the top of the list. Click it to see the changed files (from `git status`) and each file's diff against HEAD, including untracked files.
 - **Commit details.** Click a commit to see its hash, parents, author, date and changed files.
 - **Colored diff.** Click a file to see its diff. Added lines have green backgrounds and removed lines have red backgrounds. A renamed file shows only the lines that changed.
 - **AI 解釋 (AI explain).** One button runs Claude on the commit and shows the explanation as Markdown. It has a Cancel button and a 3-minute timeout. Each result is saved, so the same commit shows instantly next time. The prompt and this tab's text are in Traditional Chinese.
@@ -48,6 +49,7 @@ You can also ask an agent in Herdr to add it from `https://github.com/weiyiao/he
 - The list shows at most 300 commits. The graph column shows at most 8 lanes, and extra lanes are cut off.
 - A diff shows at most 1500 lines, and lines longer than 4000 characters are cut.
 - In a worktree, `.git` is a file and can't be watched, so the panel updates every 10 seconds instead of at once.
+- The panel watches `.git`, which doesn't change when you edit working-tree files. The uncommitted-changes row updates on the 10-second timer or the refresh button; staging or committing updates it at once.
 - With Remotes unchecked, only `origin/` badges are hidden. Badges from other remotes still show.
 - Place the `git-graph` panel in only one block. When the panel loads, it stops every running AI explain run that carries its label, including runs from other copies.
 - The Git button toggles the node with the id `git-panel`. If you rename or remove that node, the button does nothing.
