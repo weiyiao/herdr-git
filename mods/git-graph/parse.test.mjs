@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { parseFiles, diffArgs } from "./parse.js";
+import { parseFiles, diffArgs, parseStatus } from "./parse.js";
 
 // rename keeps the old path as from
 assert.deepEqual(parseFiles("R100\0old.txt\0new.txt\0M\0a.js\0"), [
@@ -20,5 +20,17 @@ assert.deepEqual(diffArgs("p", "h", { status: "R", from: "old", path: "new" }), 
 assert.deepEqual(diffArgs("p", "h", { status: "M", path: "a" }), ["diff", ...base, "p", "h", "--", "a"]);
 // root commit
 assert.deepEqual(diffArgs(undefined, "h", { status: "A", path: "a" }), ["show", "--format=", ...base, "h", "--", "a"]);
+
+// status: modified, untracked, deleted, conflict
+assert.deepEqual(parseStatus(" M a.js\0?? new.txt\0 D gone\0UU c\0AA d\0A  e\0"), [
+  { status: "M", path: "a.js", fresh: false },
+  { status: "A", path: "new.txt", fresh: true },
+  { status: "D", path: "gone", fresh: false },
+  { status: "U", path: "c", fresh: false },
+  { status: "U", path: "d", fresh: false },
+  { status: "A", path: "e", fresh: false },
+]);
+// clean tree
+assert.deepEqual(parseStatus(""), []);
 
 console.log("parse.test ok");

@@ -18,3 +18,12 @@ export function diffArgs(parent, hash, file) {
   const paths = file.from ? [file.from, file.path] : [file.path];
   return parent ? ["diff", ...(file.from ? ["-M"] : []), ...base, parent, hash, "--", ...paths] : ["show", "--format=", ...base, hash, "--", file.path];
 }
+
+// `git status --porcelain=v1 -z --no-renames --untracked-files=all`: "XY path\0". Status is one of A/D/M/U (conflict).
+export function parseStatus(out) {
+  return out.split("\0").filter(Boolean).map((entry) => {
+    const xy = entry.slice(0, 2), path = entry.slice(3), fresh = xy === "??";
+    const conflict = xy.includes("U") || xy === "AA" || xy === "DD";
+    return { status: conflict ? "U" : xy.includes("D") ? "D" : fresh || xy.includes("A") ? "A" : "M", path, fresh };
+  });
+}

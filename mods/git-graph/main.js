@@ -7,11 +7,12 @@ import * as fs from "fs/promises";
 import { spaces, panes, focused, exec, watchFolder, readTextFile, appHome, window as win, theme, settings, layout, run, props as blockProps } from "herdr";
 import { layoutGraph } from "./graph.js";
 import { explainOutcome, reapRuns } from "./explain.js";
-import { parseFiles, diffArgs } from "./parse.js";
+import { parseFiles, diffArgs, parseStatus } from "./parse.js";
 
 const PANEL = "git-panel";
 const DETAIL = 340, ROW = 28, LANE = 14, MAX_COMMITS = 300;
 const EXPLAIN_TIMEOUT_MS = 180000;
+const WT = "worktree:"; // id of the uncommitted-changes pseudo-row; no commit hash contains ":"
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -146,9 +147,11 @@ export default class GitGraph extends View {
         const root = top.stdout.trim(), git = (args) => exec("git", [...READ, ...args], { cwd: root, on });
         // Without remotes, --branches --tags leaves out remote-tracking refs and their history.
         const scope = this.scope === "current" ? ["HEAD"] : this.remotes ? ["--all"] : ["--branches", "--tags"];
-        const [log, head] = await Promise.all([
+        const [log, head, headRef, status] = await Promise.all([
           git(["log", "--topo-order", "--format=%H%x1f%P%x1f%an%x1f%at%x1f%D%x1f%s%x1e", "-n", String(MAX_COMMITS), ...scope]),
           git(["branch", "--show-current"]),
+          git(["rev-parse", "--verify", "HEAD"]),
+          git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]),
         ]);
         if (key() !== context) return;
         // An empty repo has no HEAD: git log fails, show no commits instead of an error.
@@ -159,10 +162,19 @@ export default class GitGraph extends View {
             refs: refs ? refs.split(", ").map((x) => x.replace(/^HEAD -> /, "")).filter((x) => this.remotes || !x.startsWith("origin/")) : [] };
         });
         this.root = root; this.on = on; this.error = null; this.branch = head.stdout.trim() || "HEAD";
+        // shortcut: the changed-file list stops at 1000 entries; upgrade with a "more" row if a worktree has more.
+        this.hasHead = headRef.code === 0; this.wtFiles = status.code === 0 ? parseStatus(status.stdout).slice(0, 1000) : [];
+        // The pseudo-row sits in commits, so the graph draws its lane down to HEAD and the selection survives refreshes.
+        if (this.wtFiles.length) commits.unshift({ hash: WT, parents: this.hasHead ? [headRef.stdout.trim()] : [], author: "", at: null, subject: `未提交的變更 (${this.wtFiles.length})`, refs: [] });
         this.commits = commits; this.graph = layoutGraph(commits);
         this.lanes = Math.min(8, Math.max(1, ...this.graph.map((g) => g.width))); // shortcut: graph column caps at 8 lanes, extra lanes are clipped; upgrade to a wider or horizontally scrollable graph column when a repo shows clipped lanes
         this.watch(root, cx);
         if (this.selected && !commits.some((c) => c.hash === this.selected)) this.select(null, cx);
+        else if (this.selected === WT) { // keep the open file, no blank diff in between
+          this.files = this.wtFiles;
+          const f = this.files.find((x) => x.path === this.open) ?? this.files[0];
+          if (f) this.pick(f, cx, true);
+        }
       } catch (e) { if (key() === context) this.error = String(e); }
       finally { this.loading = false; cx.notify(); if (this.again) { this.again = false; this.refresh(cx); } } // a filter change during a run was dropped; rerun with the new filter
     });
@@ -171,6 +183,13 @@ export default class GitGraph extends View {
   select(hash, cx) {
     this.selected = hash; this.detail = null; this.files = []; this.open = null; this.setLines([]);
     if (!hash) return;
+    if (hash === WT) {
+      this.detail = { hash, parents: [], author: "", date: "", message: "未提交的變更（工作區與暫存區，相對 HEAD）" };
+      this.files = this.wtFiles;
+      if (this.files.length) this.pick(this.files[0], cx);
+      cx.notify();
+      return;
+    }
     this.loadExplain(hash, cx);
     const root = this.root, on = this.on, context = this.context;
     cx.spawn(async (cx) => {
@@ -208,7 +227,7 @@ export default class GitGraph extends View {
   // shortcut: reap kills every labelled run, including one from another live git-graph copy; upgrade if git-graph is ever placed in more than one block
   explain(hash, cx) {
     const root = this.root;
-    if (this.on || !root || this.running.has(hash)) return;
+    if (hash === WT || this.on || !root || this.running.has(hash)) return;
     const run = { started: Date.now() };
     this.running.set(hash, run); this.ai.delete(hash); cx.notify();
     const dir = this.explainDir(), windows = win()?.platform === "windows", ext = windows ? "ps1" : "sh";
@@ -253,6 +272,7 @@ export default class GitGraph extends View {
     const note = (...kids) => v_flex().flex_1().min_h(0).p(12).gap(10).items_start().children(kids);
     const button = (id, label) => div().id(id).h(26).px(12).flex().items_center().rounded(6).bg(t.solid).text_color(t.solid_foreground)
       .cursor_pointer().on_mouse_down("left", stop).on_click((_e, cx) => this.explain(hash, cx)).child(label);
+    if (hash === WT) return note(div().text_color(t.muted).child("AI 解釋只支援 commit"));
     if (this.on) return note(div().text_color(t.muted).child("AI 解釋目前只支援本機 repo"));
     if (this.running.has(hash)) return note(h_flex().gap(8).items_center().text_color(t.muted)
       .child(svg("mods/workspace-chrome/spinner.svg").size(12).spin(900)).child("Claude 正在讀這個 commit…")
@@ -264,17 +284,26 @@ export default class GitGraph extends View {
       button("git-ai-run", "用 Claude 解釋"));
   }
 
-  async pick(file, cx) {
+  // keep: leave the shown lines until the new ones arrive (a refresh re-pick)
+  async pick(file, cx, keep) {
     const hash = this.selected, root = this.root, on = this.on;
-    this.open = file.path; this.setLines([]); cx.notify();
+    this.open = file.path; if (!keep) this.setLines([]); cx.notify();
     const parent = this.commits.find((c) => c.hash === hash)?.parents[0];
-    const args = diffArgs(parent, hash, file);
     let lines;
     try {
-      const r = await exec("git", [...READ, ...args], { cwd: root, on });
-      if (r.code !== 0) throw new Error(r.stderr);
-      const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
-      lines = first < 0 ? ["No text diff available (binary or empty)"] : all.slice(first);
+      if (hash === WT && (file.fresh || (!this.hasHead && file.status === "A"))) { // no HEAD side to diff: show the whole file as added
+        const text = await readTextFile(`${root}/${file.path}`, { on }).catch(() => null);
+        if (text === null) lines = ["Cannot preview this file (binary, too large, or unreadable)"];
+        else if (text.includes("\0")) lines = ["Binary file · no text diff"];
+        else if (!text) lines = ["No text diff available (binary or empty)"];
+        else { const body = text.slice(0, 400000).replace(/\n$/, "").split("\n"); lines = [`@@ -0,0 +1,${body.length} @@`, ...body.slice(0, 1500).map((l) => `+${l}`)]; }
+      } else {
+        const args = hash === WT ? ["diff", ...(this.hasHead ? ["HEAD"] : []), "--no-ext-diff", "--no-textconv", "--no-color", "--", file.path] : diffArgs(parent, hash, file);
+        const r = await exec("git", [...READ, ...args], { cwd: root, on });
+        if (r.code !== 0) throw new Error(r.stderr);
+        const all = r.stdout.replace(/\n$/, "").split("\n"), first = all.findIndex((l) => l.startsWith("@@"));
+        lines = first < 0 ? ["No text diff available (binary or empty)"] : all.slice(first);
+      }
     } catch { lines = ["Cannot preview this diff (too large or unreadable)"]; }
     if (this.selected === hash && this.open === file.path) this.setLines(lines.slice(0, 1500).map((l) => l.length > 4000 ? l.slice(0, 4000) + "… (line truncated)" : l));
     cx.notify();
@@ -308,15 +337,15 @@ export default class GitGraph extends View {
   }
 
   commitRow(i, t) {
-    const c = this.commits[i], on = c.hash === this.selected;
+    const c = this.commits[i], on = c.hash === this.selected, wt = c.hash === WT;
     return h_flex().id(`c-${c.hash}`).w_full().h(ROW).flex_none().px(10).gap(8).items_center().cursor_pointer()
       .when(on, (e) => e.bg(t.selected)).hover((s) => s.bg(t.hover))
       .child(this.graphCell(this.graph[i], t, on))
-      .child(div().w(60).flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11).text_color(t.muted).child(c.hash.slice(0, 7)))
+      .child(div().w(60).flex_none().font_family(settings().font_family ?? "JetBrains Mono").text_size(11).text_color(t.muted).child(wt ? "" : c.hash.slice(0, 7)))
       .child(h_flex().flex_1().min_w(0).gap(6).items_center().overflow_hidden()
-        .children(c.refs.map((r) => this.badge(r, t))).child(div().min_w(0).truncate().child(c.subject)))
+        .children(c.refs.map((r) => this.badge(r, t))).child(div().min_w(0).truncate().when(wt, (e) => e.text_color(t.muted)).child(c.subject)))
       .child(div().w(100).flex_none().truncate().text_color(t.muted).child(c.author))
-      .child(div().w(124).flex_none().whitespace_nowrap().text_color(t.muted).child(stamp(c.at)));
+      .child(div().w(124).flex_none().whitespace_nowrap().text_color(t.muted).child(wt ? "" : stamp(c.at)));
   }
 
   diffRow({ kind, number, text }, t) {
@@ -331,11 +360,11 @@ export default class GitGraph extends View {
 
   detailPanel(t) {
     const d = this.detail, kv = (k, v) => h_flex().gap(8).child(div().w(54).flex_none().text_color(t.dim).child(k)).child(div().flex_1().min_w(0).child(v));
-    const color = (s) => s === "A" ? t.ansi2 : s === "D" ? t.ansi1 : s === "M" ? t.blocked : t.ansi4;
+    const color = (s) => s === "A" ? t.ansi2 : s === "D" || s === "U" ? t.ansi1 : s === "M" ? t.blocked : t.ansi4;
     return h_flex().size_full().border_t(1).border_color(t.border)
       .child(v_flex().w(320).h_full().flex_none().overflow_hidden().p(12).gap(8).border_r(1).border_color(t.border)
         .child(div().id("git-msg").flex_none().max_h(48).overflow_y_scrollbar().font_semibold().child(d?.message ?? "Loading…"))
-        .when(Boolean(d), (e) => e.child(v_flex().flex_none().gap(2).text_size(12)
+        .when(Boolean(d) && d.hash !== WT, (e) => e.child(v_flex().flex_none().gap(2).text_size(12)
           .child(kv("Commit", d.hash.slice(0, 10))).child(kv("Parents", d.parents.map((p) => p.slice(0, 7)).join(" ") || "none"))
           .child(kv("Author", d.author)).child(kv("Date", d.date))))
         .child(div().flex_none().text_size(12).font_semibold().text_color(t.muted).child(`變更檔案 (${this.files.length})`))
